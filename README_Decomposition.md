@@ -503,7 +503,7 @@ cum5 <- getDecomp(dat,'rates_EMDM','across')      # total_demand
 
 `rates_EMDM -> across:` Finally restoring investor demand $\rightarrow$ yields the contribution of investor demand and asset characteristics.
 
-# 5. Why decomposition is the “major difficult step”
+# 5. Why decomposition is one of the “major difficult step”
 
 **Difficulty 1: High-Dimensional GE Fixed Point**
 
