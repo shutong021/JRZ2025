@@ -58,8 +58,12 @@ $$\Delta^{Val}_{j,t} = \log\left(1 + \frac{\widehat{NFA}^{j}_{US,t} - \widehat{N
 | **Flow Effect** | Changes in Quantity / Holdings | Prices & FX (Step $j-1$) |
 | **Valuation Effect** | Changes in Prices & FX | Quantities (Step $j$) |
 
+##### 4. Economic Significance: Why This Structural Decomposition Matters
 
+While traditional Balance of Payments (BOP) accounting also separates Current Account flows from valuation changes, the JRZ (2024) **model-implied decomposition** offers a critical advantage:
 
+**Counterfactual Isolation:** Traditional accounting can only observe *ex-post* aggregate changes. Our framework allows us to feed a specific, isolated shock (e.g., a US monetary policy tightening) into the solver.
+**Mechanism Unpacking:** We can then cleanly unpack exactly how much of the resulting global wealth transfer is driven by **capital flight (Flow Effect)** versus the **repricing of existing global portfolios (Valuation Effect)**. This structural identification is the core power of the portfolio approach to global imbalances.
 
 
 > **Note:** The paper's emphasis on the "post-2010 valuation reversal" highlights that NFA dynamics are driven not merely by flows, but significantly by valuation.
@@ -140,6 +144,22 @@ This is one of the major difficult steps in the methodology: a General Equilibri
 
 [Image of macroeconomic general equilibrium iterative numerical solver]
 
+#### math: Fixed-Point Problem
+
+We need to solve for the following high-dimensional fixed points in each counterfactual world.：
+
+$$
+\mathbf{P}^* = \mathcal{F}(\mathbf{P}^*;\ \mathbf{X}_{\text{frozen}})
+$$
+
+with $\mathbf{P} = (\text{ner}_d,\ \ln P_{d,k},\ \ln S_{d,\text{st}})$ is the endogenous price vector，$\mathcal{F}(\cdot)$ is a mapping function jointly defined by the demand system, wealth dynamics, and market clearing.
+
+The solution method is **pseudo-Newton**（pseudo-Newton），until the market clearing error is satisfied：
+
+$$
+\max_{d,k} | \text{gap}_{d,k} | < \text{tol} \quad (\text{tol}=1\mathrm{e}{-6})
+$$
+
 Within the equilibrium, the following endogenous objects are solved and updated iteratively (note that this is a fixed-point iteration, not a regression):
 * `ner_d_loop`: Destination country exchange rate (Nominal Exchange Rate to USD).
 * `ln_price_lc_d_loop`: Asset price (Long-term debt/equity priced in local currency).
@@ -188,12 +208,53 @@ if(endog.aum==TRUE){
 cfin[year > 2002, aum_loop := revaluation_loop * flow]
 ```
 
-#### (B3) Update Portfolio Weights: Within Asset Class and Across Asset Class
 
+#### (B3) Update Portfolio Weights: Within + Across (Nested Logit)
 
-**Within weights:** Logit structure, normalized after exponentiation.
+**Within**  
+
+The attractiveness of country $d$ to investors within asset class $k$ is  
+
+$$
+\delta_{o,d,k} = \beta_{\text{erx}}\cdot\text{erx}_{d} + \text{tmppref}_{o,d,k}
+$$
+
+After normalization, we get：
+
+$$
+w_{o,d|k}^{\text{within}} = \frac{\exp(\delta_{o,d,k})}{1 + \sum_{d'}\exp(\delta_{o,d',k})} = \frac{\text{weightN}}{1+\text{weightD}}
+$$
+
+**Across**  
+
+Calculate the included value for each asset class:
+
+$$
+\zeta_k = \frac{1}{\text{weight0}_k}
+$$
+
+Recalculate cross-class attractiveness：
+
+$$
+V_k = \zeta_k^\lambda \cdot \exp(\alpha_k + \xi_k)
+$$
+
+Final cross-class weights：
+
+$$
+w_k^{\text{across}} = \frac{V_k}{\sum_{k'}V_{k'}}
+$$
+
+**Final holding weight**（Two-level multiplication）：
+
+$$
+w_{o,d,k} = w_{o,d|k}^{\text{within}} \times w_k^{\text{across}}
+$$
+
+**Code**：
 
 ```r
+# Within
 cfin[ , weightN := 0]
 cfin[w != 0 & w_out != 0,
      weightN := exp(b_erx * erx_loop + tmppref)]
@@ -203,12 +264,10 @@ cfin[ , weight := 0]
 cfin[w != 0 & w_out != 0, weight := weightN / (1 + weightD)]
 cfin[w_out != 0, weight0 := 1 / (1 + weightD)]
 ```
-**Across Asset Class Weights:** Nested-Logit Layer Using  
 
-$$
-\zeta_{asset}^\lambda \times \exp(\alpha + \xi)
-$$
+```r
 
+# Across
 
 ```r
 cfin[ , zeta_asset := 0]
@@ -218,6 +277,7 @@ cfin[w_out != 0, weightN_asset := zeta_asset^lambda * exp(alpha + xi)]
 tmp[ , weight_asset := weightN_asset / sum(weightN_asset), by=.(iso3_o, year)]
 
 ```
+
 
 **Explanation:**
 
