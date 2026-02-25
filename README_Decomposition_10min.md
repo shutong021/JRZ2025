@@ -1,4 +1,3 @@
-
 # Major Difficult Step (2): Counterfactual Decomposition (GE + Flow vs Valuation)
 
 Goal:
@@ -216,30 +215,18 @@ Then it computes averages (post-2002) and reports:
 
 ## 5. A clean 10-minute presentation plan
 
-**Minute 0–1: Code structure**
-- show `Run.R` as the table of contents
-- point to `SensitivityAnalysis.R` sourcing 4 key scripts
+# holdings implied by weights
+cfin[w_out != 0, holding_loop := total_aum_loop * weight_asset * weight]
 
-**Minute 1–3: What decomposition is**
-- NFA change = flows + valuation
-- why GE is needed (prices & FX adjust)
+# aggregate demand
+cfin[ , demand := sum(holding_loop, na.rm=TRUE), by=.(type, iso3_d, year)]
+cfin[type=='DebtShort', demand := sum(holding_loop, na.rm=TRUE), by=.(type, ccy_d, year)]
 
-**Minute 3–7: Major difficult step = GE solver `RunCF()`**
-- iteration loop steps (expected returns → weights → holdings → market gaps → update FX/prices)
-- convergence and numerical safeguards
+# market cap in USD
+cfin[ , ln_mktcap_usd_loop := ln_supply_loop + ner_d_loop + ln_price_lc_d_loop]
 
-**Minute 7–9: Flow vs valuation in `getDecomp()`**
-- constant-price trick to isolate quantities
-- define `delta`, `delta_Q`, `delta_reval`
-
-**Minute 9–10: How it maps to paper tables**
-- cumulative blocks and interpretation (savings/issuance, reserves, rates, demand)
-
----
-
-## 6. Quick “cheat sheet” of where to look in R code
-
-- Scenario construction: `compute_cf()` in `Replication/Programs/RunCF.R`
+# market clearing gap
+cfin[ , gap := ln_mktcap_usd_loop - log(demand)]
 - GE solver: `RunCF()` in `Replication/Programs/RunCF.R`
 - Reset primitives: `ResetChars/ResetSupply/ResetFlows/ResetCBSupply/UpdateHoldings` in `Replication/Programs/CFHelperFunctions.R`
 - Flow vs valuation and tables: `getDecomp()` + `analyze_cf()` in `Replication/Programs/DecompHelperFunctions.R`
