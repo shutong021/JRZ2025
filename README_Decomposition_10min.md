@@ -1,12 +1,9 @@
 
 # Major Difficult Step (2): Counterfactual Decomposition (GE + Flow vs Valuation)
 
-# Decomposition (10-min) 
-
-> This note is designed for a **10-minute code session**.  
-> We focus on **structure of analysis + algorithms**, not R syntax.
-
----
+Goal:
+We explain (i) code structure, (ii) steps of analysis, and (iii) the major difficult step.
+We focus on analysis structure + algorithms, not programming syntax.
 
 ## 0. Where this part sits in the whole code pipeline
 
