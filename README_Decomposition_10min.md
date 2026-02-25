@@ -4,217 +4,178 @@ Goal:
 We explain (i) code structure, (ii) steps of analysis, and (iii) the major difficult step.
 We focus on analysis structure + algorithms, not programming syntax.
 
-## 0. Where this part sits in the whole code pipeline
 
-### Master pipeline: `Replication/Programs/Run.R`
-`Run.R` is a “table of contents” that sources all scripts in order:
+# 1. What the decomposition is doing
 
-1. **Import** raw datasets  
-2. **Build** merged panels (holdings, returns, prices, FX, characteristics, reserves, etc.)  
-3. **Run analysis** (this includes instruments + counterfactuals + decomposition)  
-4. **Output** paper tables/figures
+The core object of the paper is the U.S. Net Foreign Assets (NFA) position. Changes in the NFA originate from two main sources:
 
-For decomposition specifically, it is executed inside:
+### 1.1 Accounting identity: NFA change = Flows + Valuation
 
-- `Replication/Programs/SensitivityAnalysis.R`  (main analysis driver)
-  - `source('IVHelperFunctions.R')`
-  - `source('CFHelperFunctions.R')`
-  - `source('DecompHelperFunctions.R')`
-  - `source('RunCF.R')`
+Any international balance sheet has an intuitive decomposition:
 
-So the decomposition “engine” is:  
-**`compute_cf()` (scenario construction) → `RunCF()` (GE solver) → `analyze_cf()` (flow vs valuation + tables).**
+* **Flows:** The "quantity changes" resulting from net purchases or net issuances during the current period.
+* **Valuation:** Even without trading a single share or bond, existing holdings will be revalued due to changes in asset prices, exchange rates, and returns.
 
----
+> **Note:** The paper's emphasis on the "post-2010 valuation reversal" highlights that NFA dynamics are driven not merely by flows, but significantly by valuation.
 
-## 1. What decomposition tries to answer (paper-side logic)
+### 1.2 Why we need GE counterfactuals, not partial equilibrium
 
-The paper studies why U.S. Net Foreign Assets (NFA) evolves the way it does, and why **valuation effects** reverse after 2010.
+When conducting the attribution analysis of NFA changes, the paper discards the traditional partial equilibrium method of taking static differences and instead strictly adopts a **General Equilibrium (GE) counterfactual framework**. 
 
-A key accounting identity for any external balance sheet is:
+This is because international financial markets are highly endogenously interconnected: 
+1. A shock to any primitive driver, such as central bank reserves, will trigger the substitution and reallocation of investors' portfolio weights.
+2. This disrupts the market supply and demand balance, forcing asset prices and exchange rates to adjust. 
+3. Concurrently, changes in prices and exchange rates will alter asset returns, dynamically revaluing global assets under management (Wealth/AUM).
+4. This wealth revaluation in turn feeds back into holding demands.
 
-> **Change in NFA = Flow component + Valuation component**
+Based on this dynamic transmission mechanism, at every step of the decomposition path—that is, whenever a primitive driver block is released—a general equilibrium must be **re-solved**. This allows prices, exchange rates, and portfolios to iteratively adjust together until comprehensive **"market clearing"** is achieved. 
 
-- **Flows**: net purchases / net issuance (quantity changes)
-- **Valuation**: changes in prices + exchange rates + returns (revaluation of the existing stock)
-
-The paper then goes further: it attributes these changes to **blocks of “primitive drivers”** such as:
-
-1) **Savings & Issuances** (capital flows, issuance, dividends)  
-2) **Monetary policy** (reserves, QE, interest rate environment)  
-3) **Demand shifts** (characteristics + latent demand within/across asset classes)
-
-Because prices, FX and portfolio weights jointly adjust in equilibrium, attribution must be done under **general equilibrium (GE) counterfactuals**, not partial equilibrium.
+This deduction path of repeatedly solving for fixed-point general equilibrium, rather than simply calculating static differences, constitutes the core and most challenging technical procedure in the counterfactual decomposition of this study.
 
 ---
 
-## 2. The counterfactual design in code: `compute_cf()` (in `RunCF.R`)
 
-### 2.1 Scenario naming (“cftype”)
-At the end of `compute_cf()`, the code stacks a list of scenarios and tags them with `cftype`:
+# 2. Algorithm
 
-- `'bench'` benchmark with key primitives reset
-- `'us_savings'`, `'dm_savings_asia'`, `'dm_savings_europe'`, `'dmem_savings'` (savings/issuance blocks)
-- `'QE_US'`, `'res_dm'`, `'res_em'` (monetary policy via central bank holdings)
-- `'rates_US'`, `'rates_EMDM'` (rate environment)
-- `'chars'`, `'within'` (characteristics and within-asset latent demand)
-- `'across'` (full model / across-asset latent demand also active)
+The computational workflow of the entire decomposition can be broken down into three distinct layers.
 
-This ordered list is crucial: it defines the sequential decomposition path.
+### Step A. Build Counterfactual "Worlds" by Freezing Primitive Drivers (`compute_cf()`)
 
-### 2.2 “Reset” functions = how primitives are held fixed
-`compute_cf()` builds each scenario by starting from the observed panel `datin` and applying reset rules:
+The core objective of Step A is to construct a series of counterfactual "worlds" by freezing specific primitive drivers using the `compute_cf()` function. 
 
-- `ResetChars(cf_panel, datin, ...)`  
-  Freeze (or partially freeze) **country characteristics and/or latent demand components** back to earlier values.
-- `ResetSupply(cf_panel, datin, countries=...)`  
-  Freeze **issuance / supply** (possibly for selected countries).
-- `ResetFlows(cf_panel, datin, countries=...)`  
-  Freeze **dividends and capital flows (savings)**.
-- `ResetCBSupply(cf_panel, datin, cbs=...)`  
-  Freeze **central bank reserve holdings** for selected CB groups.
-- `UpdateHoldings(cf_panel)`  
-  Recompute holdings and weights consistent with the imposed resets.
+Specifically, the program follows this procedural logic:
+1. **Define the Baseline**: It first treats the real-world dataset (`datin`) as the baseline **"full model / across"** world.
+2. **Initialize Deduction Panel**: It copies the baseline data to create a new `cf_panel` for counterfactual deductions. 
+3. **Freeze Drivers**: To construct each counterfactual world, the code uses `Reset` functions to forcibly **"freeze"** selected primitive drivers back to a historical baseline state (e.g., locking variables at their 2002 levels). 
+4. **Synchronize Holdings**: It then calls `UpdateHoldings()` to ensure these artificially frozen settings translate into logically consistent initial asset holdings and portfolio weights. 
+5. **Solve General Equilibrium**: Once the initial setup is complete, the program calls `RunCF()` on this frozen world to re-solve for the General Equilibrium (GE). 
+6. **Aggregate and Label**: The resulting equilibrium data is saved as an independent object (e.g., `cf_vals_k`). Finally, all the deduced counterfactual worlds are aggregated together, with each assigned its respective `cftype` label to denote which drivers were manipulated.
 
-**Interpretation**: each scenario is a “world” where some primitives are held at baseline while others evolve.
+### Code Reference (Excerpt from `RunCF.R`)
 
----
+Finally, `compute_cf()` assigns a label to each counterfactual world and aggregates them into a single panel using `rbindlist`:
 
-## 3. The GE solver (major difficult step): `RunCF()` (in `RunCF.R`)
+```r
 
-`RunCF(cfin, ...)` takes a scenario panel and **solves for equilibrium** prices/FX/holdings by fixed-point iterations.
+cfout <- rbindlist(list(
+  cf_vals_2[, cftype:='bench'],
+  cf_vals_3[, cftype:='us_savings'],
+  cf_vals_4[, cftype:='dm_savings_asia'],
+  cf_vals_5[, cftype:='dm_savings_europe'],
+  cf_vals_6[, cftype:='dmem_savings'],
+  cf_vals_7[, cftype:='QE_US'],
+  cf_vals_8[, cftype:='res_dm'],
+  cf_vals_9[, cftype:='res_em'],
+  cf_vals_10[, cftype:='rates_US'],
+  cf_vals_11[, cftype:='rates_EMDM'],
+  cf_vals_12[, cftype:='chars'],
+  cf_vals_13[, cftype:='within'],
+  cf_vals_1[, cftype:='across']
+))
+```
 
-### 3.1 The equilibrium objects (what is solved endogenously)
-In the code, the “loop variables” are (suffix `_loop`):
-
-- `ner_d_loop`, `ner_o_loop` : exchange rates (destination/origin)
-- `ln_price_lc_d_loop` : local-currency asset price (LT debt & equity)
-- `ln_supply_loop` : (for pegged FX countries, ST supply adjusts instead of FX)
-- `aum_loop` : wealth / assets under management
-- `holding_loop` : holdings implied by current weights and wealth
-
-### 3.2 Step-by-step algorithm inside each iteration
-
-Each iteration does:
-
-**(1) Update expected excess return `erx_loop`**
-\[
-erx = b_{p}\ln P_d + b_{rer}(\text{NER}_d - \text{RER proxy}) 
-      - b_{p,st}\ln P_{st,o} - b_{rer,st}(\text{NER}_o - \text{RER proxy}) + \text{fixed effects}
-\]
-In code: `cfin[, erx_loop := ...]`
-
-**(2) Update total return and revaluation (wealth dynamics)**
-- compute `return_price_loop`, then `return_tot_loop = return_price_loop + div`
-- if `endog.aum = TRUE`, revalue last period holdings and update `aum_loop`
-
-**(3) Update within-asset portfolio weights**
-Within an asset class, weights follow a (logit-like) structure:
-\[
-w_{i\to d} \propto \exp(b_{erx}\cdot erx_{d} + \text{preference shifters})
-\]
-In code: `weightN := exp(b_erx * erx_loop + tmppref)`, then normalize to `weight`.
-
-**(4) Update across-asset weights (nested-logit layer)**
-The code constructs an “inclusive value / zeta” type term and updates cross-asset allocation:
-- compute `weightN_asset := zeta_asset^lambda * exp(alpha + xi)`
-- normalize to `weight_asset`
-
-**(5) Update holdings and compute market clearing gaps**
-Holdings implied by wealth and weights:
-\[
-\text{holding}_{i\to d} = \text{total\_aum}_{i}\cdot \text{weight\_asset}\cdot \text{weight}
-\]
-Then aggregate demand by destination:
-- `demand := sum(holding_loop)` by market
-Market capitalization in USD:
-\[
-\ln \text{mktcap}_{d} = \ln \text{supply}_{d} + \text{NER}_{d} + \ln P_{d}
-\]
-Gap:
-\[
-gap = \ln \text{mktcap}_{d} - \ln \text{demand}_{d}
-\]
-Convergence criterion: `max(abs(gap)) < tol`.
-
-**(6) Update FX and prices to reduce gaps (approx Newton step)**
-- For **short-term debt** markets, adjust `ner_d_loop` for floating FX currencies.
-- For pegged FX set, adjust `ln_supply_loop` instead.
-- For **LT debt & equity**, update `ln_price_lc_d_loop`.
-
-This is the numerical core: update rules are proportional to `gap` scaled by `scale`, with safeguards (clipping derivatives).
-
-### 3.3 Why this is “major difficult”
-- It is a **high-dimensional fixed point**: prices, FX, wealth, and portfolio weights interact.
-- It is **not a simple regression**: you must compute equilibrium each time primitives change.
-- It is **numerically delicate**: tolerance, step size (`scale`), derivative clipping all matter.
+Therefore, the attribution method is: **Every time a set of economic primitive driver blocks is changed, the general equilibrium must be solved again to allow prices, exchange rates, and asset portfolios to adjust together to a "market clearing" state.**
 
 ---
 
-## 4. Turning counterfactual paths into decomposition: `analyze_cf()` (in `DecompHelperFunctions.R`)
+### Step B. Solve GE Equilibrium Inside Each World (`RunCF()`)
 
-The output of `compute_cf()` is a big table with multiple `cftype` worlds.
-Decomposition compares them sequentially.
+This is one of the major difficult steps in the methodology: a General Equilibrium (GE) must be solved within each counterfactual world. 
 
-### 4.1 Compute U.S. NFA in each world: `getQ()`
-`getQ(datin)` extracts all positions where U.S. is origin or destination and returns holdings and returns.
+[Image of macroeconomic general equilibrium iterative numerical solver]
 
-### 4.2 Flow vs valuation split via a “constant-price” counterfactual: `getDecomp()`
-
-Given two worlds (starttype → endtype):
-- `val1 = getQ(world=starttype)`  
-- `val2 = getQ(world=endtype)`  
-merge into `both`.
-
-**Constant-price holdings**
-The code constructs:
-\[
-\text{holding}^{const} = \text{holding}^{(end)}\cdot \exp\left(r^{(start)} - r^{(end)}\right)
-\]
-This is “what the end-world holdings would be worth if priced using start-world returns.”
-
-Then it aggregates U.S. assets and liabilities:
-
-- U.S. assets = sum holdings where `iso3_o == 'USA'`
-- U.S. liabilities = sum holdings where `iso3_d == 'USA'`
-
-Compute:
-- \(NFA^{(start)}\), \(NFA^{(end)}\), and \(NFA^{const}\)
-
-**Three log contributions**
-- Total change:
-\[
-\delta = \ln\left(\frac{NFA^{end}}{NFA^{start}}\right)
-\]
-- Quantity/flow component (constant prices):
-\[
-\delta_Q = \ln\left(\frac{NFA^{const}}{NFA^{start}}\right)
-\]
-- Valuation component:
-\[
-\delta_{reval} = \ln\left(1 + \frac{NFA^{end}-NFA^{const}}{NFA^{start}}\right)
-\]
-(so that roughly \(\delta \approx \delta_Q + \delta_{reval}\) for small changes)
-
-In code, these are `delta`, `delta_Q`, `delta_reval`.
-
-### 4.3 Aggregation into paper-style tables
-`analyze_cf(dat)` loops across all `cftype` transitions and also constructs cumulative blocks:
-- `bench → across` = total
-- `bench → dmem_savings` = total savings/issuances
-- `dmem_savings → res_em` = total reserves
-- `res_em → rates_EMDM` = total rates
-- `rates_EMDM → across` = total demand
-
-Then it computes averages (post-2002) and reports:
-- log changes * 100 (percent)
-- level changes (exp(delta)-1)
-- pre vs post split for valuation (exorbitant privilege reversal)
+Within the equilibrium, the following endogenous objects are solved and updated iteratively (note that this is a fixed-point iteration, not a regression):
+* `ner_d_loop`: Destination country exchange rate (Nominal Exchange Rate to USD).
+* `ln_price_lc_d_loop`: Asset price (Long-term debt/equity priced in local currency).
+* `ln_supply_loop`: Short-term debt supply (adjusted via quantity for pegged FX countries).
+* `aum_loop`: Wealth / Assets Under Management (dynamically updated by returns when `endog.aum=TRUE`).
+* `holding_loop`: Portfolio holdings (implied by weights $\times$ wealth).
+* `gap`: Market clearing error (Supply market capitalization $-$ Demand).
 
 ---
 
-## 5. A clean 10-minute presentation plan
+#### (B1) Calculate Expected Excess Returns (`erx_loop`) Based on Current Prices/FX
 
+This step synthesizes prices, exchange rates, and return predictors into a single expected return metric. Later, the portfolio weights will be updated based on $\exp(\beta_{erx} \times erx\_loop + preference)$.
+
+```r
+# File: Replication/Programs/RunCF.R (inside RunCF iteration)
+
+cfin[, erx_loop :=
+  b_ln_price_lc*ln_price_lc_d_loop + b_rer*(ner_d_loop - rel_cpi_d)
+  - b_ln_price_lc_st*ln_price_lc_st_o_loop - b_rer_st*(ner_o_loop - rel_cpi_o)
+  + rxfe_d
+]
+```
+
+#### (B2) Update Wealth Dynamics via Returns (Revaluation $\rightarrow$ AUM)
+
+This is a crucial mechanism in the GE framework: wealth is not static. The transmission channel works as follows:
+Prices/FX adjust $\rightarrow$ Returns change $\rightarrow$ Existing asset stocks are revalued $\rightarrow$ Multiplied by flows $\rightarrow$ Yields new AUM. The updated AUM subsequently alters holding demands, which in turn impacts market clearing.
+
+
+```r
+# Calculate price returns (return_price_loop) and total returns (return_tot_loop)
+cfin[year > 2002 & type != 'Equity',
+     return_price_loop := ln_price_lc_d_loop - ln_price_lc_d_lag + (ner_d_loop - ner_d_lag)]
+cfin[year > 2002 & type == 'Equity',
+     return_price_loop := ln_price_lc_d_loop - ln_price_lc_d_lag]
+cfin[year > 2002, return_tot_loop := return_price_loop + div]
+
+# If endogenous AUM is enabled: update aum_loop via revaluation and flows
+if(endog.aum==TRUE){
+  cfin[year > 2002,
+       revaluation_loop := sum(holding_lag * exp(return_tot_loop), na.rm=T),
+       by=.(type, iso3_o, year)]
+  # ...
+}
+cfin[year > 2002, aum_loop := revaluation_loop * flow]
+```
+
+#### (B3) Update Portfolio Weights: Within Asset Class and Across Asset Class
+
+
+**Within weights:** Logit structure, normalized after exponentiation.
+
+```r
+cfin[ , weightN := 0]
+cfin[w != 0 & w_out != 0,
+     weightN := exp(b_erx * erx_loop + tmppref)]
+cfin[w_out != 0, weightD := sum(weightN, na.rm=TRUE), by=.(type, iso3_o, year)]
+
+cfin[ , weight := 0]
+cfin[w != 0 & w_out != 0, weight := weightN / (1 + weightD)]
+cfin[w_out != 0, weight0 := 1 / (1 + weightD)]
+```
+**Across Asset Class Weights:** Nested-Logit Layer Using  
+
+$$
+\zeta_{asset}^\lambda \times \exp(\alpha + \xi)
+$$
+
+
+```r
+cfin[ , zeta_asset := 0]
+cfin[w_out != 0, zeta_asset := 1 / weight0]
+cfin[w_out != 0, weightN_asset := zeta_asset^lambda * exp(alpha + xi)]
+...
+tmp[ , weight_asset := weightN_asset / sum(weightN_asset), by=.(iso3_o, year)]
+
+```
+
+**Explanation:**
+
+Within: Determines which specific country to invest in within the same asset class.
+
+Across: Determines how to allocate capital among the three major categories: short-term debt, long-term debt, and equity.
+
+
+These two nested layers jointly dictate the final aggregate holdings demand.
+
+
+#### (B4) Obtain holding demand from weights $\times$ wealth, then calculate market clearing gap
+
+```r
 # holdings implied by weights
 cfin[w_out != 0, holding_loop := total_aum_loop * weight_asset * weight]
 
@@ -227,8 +188,201 @@ cfin[ , ln_mktcap_usd_loop := ln_supply_loop + ner_d_loop + ln_price_lc_d_loop]
 
 # market clearing gap
 cfin[ , gap := ln_mktcap_usd_loop - log(demand)]
-- GE solver: `RunCF()` in `Replication/Programs/RunCF.R`
-- Reset primitives: `ResetChars/ResetSupply/ResetFlows/ResetCBSupply/UpdateHoldings` in `Replication/Programs/CFHelperFunctions.R`
-- Flow vs valuation and tables: `getDecomp()` + `analyze_cf()` in `Replication/Programs/DecompHelperFunctions.R`
-- Driver script: `Replication/Programs/SensitivityAnalysis.R`
+```
 
+
+**Explanation:** The market clearing gap is calculated as follows:
+
+$$
+gap = \log(\text{supply value}) - \log(\text{demand})
+$$
+
+A $gap > 0$ indicates that the "supply market cap is larger / demand is insufficient." This requires price/FX adjustments to either raise demand or lower the supply market cap.
+
+
+#### (B5) Adjust FX / prices using a pseudo-Newton update rule until convergence
+
+Update exchange rates (using the short debt market to pin down FX):
+
+
+```r
+# update NER based on DebtShort market
+cfin[type=='DebtShort',
+     D_ner := sum(b_erx * b_rer * holding_loop * (1 - weight), na.rm=TRUE),
+     by=.(ccy_d, year)]
+cfin[, D_ner := (D_ner / demand)]
+cfin[, D_ner := 1 / (-D_ner)]
+cfin[abs(D_ner) > 1, D_ner := sign(D_ner)]
+
+# floating FX: adjust ner
+cfin[type=='DebtShort' & !(ccy_d %in% peggedfx),
+     ner_d_loop := ner_d_loop - scale * D_ner * gap]
+
+# pegged FX: adjust short debt quantity (supply) instead
+cfin[type=='DebtShort' & ccy_d %in% peggedfx,
+     ln_supply_loop := ln_supply_loop - scale * 1 * gap]
+```
+
+
+Update prices (LT debt & equity):
+
+
+```r
+cfin[ , D_price := sum(b_erx * b_ln_price_lc * holding_loop * (1 - weight), na.rm=TRUE),
+     by=.(type, iso3_d, year)]
+cfin[ , D_price := D_price / demand]
+cfin[ , D_price := 1 / (1 - pmin(0, D_price))]
+cfin[abs(D_price) > 1 , D_price := sign(D_price)]
+
+cfin[type != 'DebtShort',
+     ln_price_lc_d_loop := ln_price_lc_d_loop - scale * D_price * gap]
+```
+
+**Explanation:**
+
+This represents the core of the "pseudo-Newton / fixed-point" algorithm:
+
+It uses approximate derivatives (D_ner, D_price) to determine the update direction and step size.
+
+scale controls the step size (too large may cause oscillations, while too small results in slow convergence).
+
+Derivative clipping is applied (abs(D_ner) > 1 takes sign) to guarantee numerical stability.
+
+Convergence criterion:
+```r
+tmpgap <- max(abs(cfin$gap), na.rm=TRUE)
+if(tmpgap < tol) break
+```
+
+
+# 3. Flow vs valuation: the exact decomposition formula in code (getDecomp())
+
+### 3.1 Extract U.S.-Related Asset and Liability Holdings `getQ`
+
+```r
+# File: Replication/Programs/DecompHelperFunctions.R
+
+getQ <- function(datin) {
+  tmp <- datin[iso3_o=='USA' | iso3_d=='USA',
+               .(iso3_o, iso3_d, type, year, return_tot, holding, aum,
+                 ln_price_lc_d, ner_d, div)]
+  tmp[, .(iso3_o, iso3_d, type, year, return_tot, holding)]
+}、
+```
+**Explanation:**
+
+`iso3_o == 'USA'` represents U.S. external assets where U.S. investors are holding foreign assets.
+
+`iso3_d == 'USA'` represents U.S. external liabilities where foreign investors are holding U.S. assets.
+
+### 3.2 Core: Construct Constant-Price Holdings to Isolate Flows `holding_constprice`
+
+```r
+# File: Replication/Programs/DecompHelperFunctions.R
+
+both[, holding_constprice := holding.y * exp(return_tot.x - return_tot.y)]
+both[iso3_d=='OUT', holding_constprice := holding.y]
+```
+
+Here `.x` denotes the start world and `.y` denotes the end world.
+
+Key Intuition:
+
+`holding.y `is the nominal holding in the end world.
+
+If we want to strip out the price and return effects, we must reprice the end-world holdings according to the start-world returns.
+
+`exp(return_tot.x - return_tot.y)` performs this repricing via logarithmic transformation.
+
+This can be understood as:
+**constant-price holdings = end-world quantities × start-world prices**
+Implemented in the code using the exponential form of the return differential.
+
+
+
+### 3.3 Calculate NFA and Extract the Three Components: Total, Quantity, and Revaluation
+
+```r
+# aggregate assets and liabilities
+tmpa <- both[iso3_o=='USA',
+             .(assets.x=sum(holding.x), assets.y=sum(holding.y),
+               assets_constprice=sum(holding_constprice)),
+             keyby=.(year)]
+
+tmpl <- both[iso3_d=='USA',
+             .(liab.x=sum(holding.x), liab.y=sum(holding.y),
+               liab_constprice=sum(holding_constprice)),
+             keyby=.(year)]
+
+both <- merge(tmpa, tmpl, by='year')
+
+both[, NFA.x := assets.x - liab.x]
+both[, NFA.y := assets.y - liab.y]
+both[, NFA_constprice := assets_constprice - liab_constprice]
+
+# three deltas
+both[, delta := log(NFA.y / NFA.x)]                         # total log change
+both[, delta_Q := log(NFA_constprice / NFA.x)]              # "quantity/flow"
+both[, delta_reval := log(1 + (NFA.y - NFA_constprice)/NFA.x)]  # "valuation"
+```
+
+**Explanation:**
+
+`delta`: Total NFA change between the two worlds in log form.
+
+`delta_Q`: The change under constant-price conditions removing price and return effects $\rightarrow$ closer to the contribution of flows and quantity.
+
+`delta_reval`: The residual portion $\rightarrow$ the contribution of valuation and revaluation.
+
+
+# 4. From Many Worlds to Paper-Style Block Decomposition (`analyze_cf()`)
+
+With the `getDecomp()` function, we can chain the counterfactual worlds together to calculate the cumulative contribution by block. Inside `analyze_cf()`, the code performs two types of comparisons:
+
+### 4.1 Sequential Comparison (Step-by-Step Transition)
+
+
+```r
+alltypes <- c('bench', 'us_savings', ..., 'within', 'across')
+
+allout <- foreach(idx=2:length(alltypes)) %do% {
+  getDecomp(dat, alltypes[idx-1], alltypes[idx])
+}
+```
+**Explanation:**
+
+This represents the sequential decomposition path: releasing the primitive blocks step-by-step from one world to the next.
+
+### 4.2 Key Cumulative Blocks (Corresponding to Tables II, III, and IV in the Paper)
+
+```r
+cum1 <- getDecomp(dat,'bench','across')           # total
+cum2 <- getDecomp(dat,'bench','dmem_savings')     # total_savings
+cum3 <- getDecomp(dat,'dmem_savings','res_em')    # total_reserves
+cum4 <- getDecomp(dat,'res_em','rates_EMDM')      # total_rates
+cum5 <- getDecomp(dat,'rates_EMDM','across')      # total_demand
+```
+
+
+**Explanation of the Decomposition Sequence:**
+
+`bench -> dmem_savings`: Restoring the savings and issuances block from the frozen baseline state $\rightarrow$ yields the contribution of savings/issuances.
+
+`dmem_savings -> res_em`: Restoring reserves on top of the already released savings $\rightarrow$ yields the contribution of central bank reserves.
+
+`res_em -> rates_EMDM:` Restoring interest rates next $\rightarrow$ yields the contribution of interest rates and monetary policy.
+
+`rates_EMDM -> across:` Finally restoring investor demand $\rightarrow$ yields the contribution of investor demand and asset characteristics.
+
+# 5. Why decomposition is the “major difficult step”
+
+**Difficulty 1: High-Dimensional GE Fixed Point**
+
+This approach is not a simple regression, but a complex, high-dimensional fixed-point iterative equilibrium solving process. Endogenous variables—including asset prices (LT/Equity), exchange rates (NER), pegged short-term debt supply, nested portfolio weights, and endogenous wealth revaluation (AUM)—continuously feed back into each other. The entire system must be solved iteratively until all global markets clear simultaneously ($gap \to 0$).
+
+**Difficulty 2: Path Dependence**
+The structural decomposition exhibits strong path dependence, meaning the sequence in which the primitive blocks are accumulated (e.g., `bench` $\to$ `savings` $\to$ `reserves` $\to$ `rates` $\to$ `demand` $\to$ `across`) directly impacts their calculated marginal contributions. The paper deliberately selects an economically interpretable sequence as the baseline, though robustness can be verified by altering the order or averaging the effects across different paths.
+
+**Difficulty 3: Numerical Convergence**
+
+The update mechanism in `RunCF()` acts as a pseudo-Newton algorithm, which introduces significant numerical challenges. The step size (`scale`) must be carefully tuned, as too large a step causes severe oscillations, while too small a step leads to extremely slow convergence. Furthermore, derivative clipping on `D_ner` and `D_price` is necessary to guarantee numerical stability, and a strict tolerance threshold (`tol`) must be defined to establish the acceptable error margin for market clearing.
