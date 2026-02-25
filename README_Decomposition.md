@@ -16,6 +16,49 @@ Any international balance sheet has an intuitive decomposition:
 * **Flows:** The "quantity changes" resulting from net purchases or net issuances during the current period.
 * **Valuation:** Even without trading a single share or bond, existing holdings will be revalued due to changes in asset prices, exchange rates, and returns.
 
+
+#### Paper Definition: Flow Effect vs. Valuation Effect (Log Decomposition)
+
+Beyond the intuition that "NFA change = flows + valuation," the framework formally defines the **Flow Effect** and **Valuation Effect** in log form using a **Constant-Price NFA** benchmark.
+
+##### 1. Conceptual Framework
+Let the U.S. Net Foreign Assets at step $j$ of the decomposition at time $t$ be represented by:
+
+$$\widehat{NFA}^{j}_{US,t}$$
+
+We define the constant-price NFA, which holds asset prices and exchange rates fixed at the levels from step $j-1$, as:
+
+$$\widehat{NFA}^{ConstPrice,j}_{US,t}$$
+
+---
+
+##### 2. Log-Decomposition Formulas
+
+The decomposition separates the total change into two distinct components:
+
+##### **A. Flow Effect ($\Delta^{Flow}_{j,t}$)**
+This captures the change driven by **quantities and flows** while holding prices and FX constant:
+
+$$\Delta^{Flow}_{j,t} = \log\left(1 + \frac{\widehat{NFA}^{ConstPrice,j}_{US,t} - \widehat{NFA}^{j-1}_{US,t}}{\widehat{NFA}^{j-1}_{US,t}}\right)$$
+
+##### **B. Valuation Effect ($\Delta^{Val}_{j,t}$)**
+This captures the change driven by **revaluation** via asset price and FX updates:
+
+$$\Delta^{Val}_{j,t} = \log\left(1 + \frac{\widehat{NFA}^{j}_{US,t} - \widehat{NFA}^{ConstPrice,j}_{US,t}}{\widehat{NFA}^{j-1}_{US,t}}\right)$$
+
+---
+
+##### 3. Summary of Interpretation
+
+| Component | Driver | Variable Fixed At |
+| :--- | :--- | :--- |
+| **Flow Effect** | Changes in Quantity / Holdings | Prices & FX (Step $j-1$) |
+| **Valuation Effect** | Changes in Prices & FX | Quantities (Step $j$) |
+
+
+
+
+
 > **Note:** The paper's emphasis on the "post-2010 valuation reversal" highlights that NFA dynamics are driven not merely by flows, but significantly by valuation.
 
 ### 1.2 Why we need GE counterfactuals, not partial equilibrium
@@ -200,9 +243,58 @@ $$
 A $gap > 0$ indicates that the "supply market cap is larger / demand is insufficient." This requires price/FX adjustments to either raise demand or lower the supply market cap.
 
 
+
+
+
+
+
+##### Market-Clearing Condition
+
+The solver iterates until the system reaches equilibrium, defined by the following market-clearing condition:
+
+$$\text{Demand}^{USD}_{d,\ell,t} = \text{MktCap}^{USD}_{d,\ell,t}$$
+
+The model achieves convergence when the implied gap between aggregate demand and total market capitalization approaches zero.
+
+
+
 #### (B5) Adjust FX / prices using a pseudo-Newton update rule until convergence
 
 Update exchange rates (using the short debt market to pin down FX):
+
+
+##### Appendix Algorithm: GE Counterfactual Equilibrium
+
+The counterfactual equilibrium is solved as a root-finding problem using an **approximate Newton Method**. The model seeks to zero out the market-clearing function $H(P)$ across all asset markets.
+
+###### 1. Mathematical Objective
+
+The solver targets the equilibrium price vector $P$ (including prices, FX, and short-debt quantities) where:
+
+$$H(P) = 0$$
+
+To find the root, we update $P$ using the Jacobian $J_H$:
+
+$$P' = P - J_H^{-1} H(P)$$
+
+> **Note:** Due to high dimensionality, the implementation approximates $J_H$ using its **diagonal elements** to ensure computational efficiency.
+
+---
+
+###### 2. Implementation Logic (`RunCF.R`)
+
+In our `RunCF()` function, we implement this iteration by calculating the log-difference between supply and demand:
+
+$$gap = \log(\text{MktCap}^{USD}) - \log(\text{Demand}^{USD})$$
+
+We then update the Nominal Exchange Rate ($ner$) and prices ($P$) using diagonal-style scalers ($D$) and a learning rate ($scale$):
+
+$$ner \leftarrow ner - scale \cdot D_{ner} \cdot gap$$
+$$\ln P \leftarrow \ln P - scale \cdot D_{price} \cdot gap$$
+
+The solver iterates until convergence is achieved: $\max(|gap|) < \text{tol}$.
+
+
 
 
 ```r
@@ -256,6 +348,30 @@ if(tmpgap < tol) break
 
 
 # 3. Flow vs valuation: the exact decomposition formula in code (getDecomp())
+
+#### Paper Construction: Constant-Price NFA
+
+To compute the Constant-Price Net Foreign Assets ($\widehat{NFA}^{ConstPrice,j}_{US,t}$), the framework "reprices" step-$j$ holdings using the prices and exchange rates from step $j-1$.
+
+##### 1. Price Conversion Ratio (Theoretical)
+The model defines a conversion ratio $\rho^j_t(n,\ell)$ to revert the dollar price-per-share of asset $n$ in class $\ell$ from the current step ($j$) back to the previous step ($j-1$):
+
+$$\rho^j_t(n,\ell) = \frac{\widehat{P}^{j}_t(n)\widehat{E}^{j}_t(n)\widehat{S}^{j}_t(n,\ell)}{\widehat{P}^{j-1}_t(n)\widehat{E}^{j-1}_t(n)\widehat{S}^{j-1}_t(n,\ell)}$$
+
+---
+
+##### 2. Implementation Logic (`getDecomp.R`)
+
+In `DecompHelperFunctions.R::getDecomp()`, we implement this constant-price logic via a return-based repricing method. This approach is mathematically consistent with the paper's "constant price/FX" concept but is optimized for return-series data:
+
+$$Holding^{const} = Holding^{end} \cdot \exp(r^{start} - r^{end})$$
+
+**Key Equivalence:**
+* **$r^{start}$**: Returns at the baseline (step $j-1$).
+* **$r^{end}$**: Returns at the counterfactual (step $j$).
+* The exponential term effectively strips out the price impact of the current step to isolate the quantity effect.
+
+
 
 ### 3.1 Extract U.S.-Related Asset and Liability Holdings `getQ`
 
