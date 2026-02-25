@@ -1,9 +1,12 @@
 # Major Difficult Step (2): Counterfactual Decomposition (GE + Flow vs Valuation)
 
-Goal:
-We explain (i) code structure, (ii) steps of analysis, and (iii) the major difficult step.
-We focus on analysis structure + algorithms, not programming syntax.
+**Goal (for the code session):** explain (i) code structure, (ii) analysis steps, (iii) the major difficult step (GE fixed-point / pseudo-Newton solver).  
+We focus on **structure + algorithms**, not R syntax.
 
+**This note covers three tasks:**
+1. Construct counterfactual “worlds” (`compute_cf()`).
+2. Re-solve general equilibrium inside each world (`RunCF()`).
+3. Decompose NFA changes into **flow vs valuation** and aggregate by blocks (`getDecomp()`, `analyze_cf()`).
 
 # 1. What the decomposition is doing
 
@@ -81,6 +84,16 @@ This deduction path of repeatedly solving for fixed-point general equilibrium, r
 # 2. Algorithm
 
 The computational workflow of the entire decomposition can be broken down into three distinct layers.
+
+## Code map (where to look)
+
+| Component | What it does | Main file / function |
+|---|---|---|
+| Build counterfactual worlds | freeze selected primitives, label worlds by `cftype` |  `compute_cf()` |
+| GE solver (major difficult step) | fixed-point / pseudo-Newton iterations to clear markets |  `RunCF()` |
+| Primitive reset helpers | implement “freeze X at baseline” for chars/supply/flows/reserves | `CFHelperFunctions.R`|
+| Flow vs valuation accounting | constant-price repricing and log decomposition | `DecompHelperFunctions.R` → `getDecomp()` |
+| Block aggregation (paper tables) | sequential + cumulative block contributions | `DecompHelperFunctions.R` → `analyze_cf()` |
 
 ### Step A. Build Counterfactual "Worlds" by Freezing Primitive Drivers (`compute_cf()`)
 
