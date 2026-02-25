@@ -142,23 +142,23 @@ Therefore, the attribution method is: **Every time a set of economic primitive d
 
 This is one of the major difficult steps in the methodology: a General Equilibrium (GE) must be solved within each counterfactual world. 
 
-[Image of macroeconomic general equilibrium iterative numerical solver]
 
-#### math: Fixed-Point Problem
+#### Mathematical Formulation: High-Dimensional Fixed-Point Problem
 
-We need to solve for the following high-dimensional fixed points in each counterfactual world.：
+In each counterfactual world we solve the fixed-point equation
 
 $$
 \mathbf{P}^* = \mathcal{F}(\mathbf{P}^*;\ \mathbf{X}_{\text{frozen}})
 $$
 
-with $\mathbf{P} = (\text{ner}_d,\ \ln P_{d,k},\ \ln S_{d,\text{st}})$ is the endogenous price vector，$\mathcal{F}(\cdot)$ is a mapping function jointly defined by the demand system, wealth dynamics, and market clearing.
+where $\mathbf{P} = (\text{ner}_d,\ \ln P_{d,k},\ \ln S_{d,\text{st}})$ is the vector of endogenous prices/exchange rates/supply, and $\mathcal{F}(\cdot)$ is the mapping defined by the nested-logit demand system, endogenous wealth dynamics, and market-clearing conditions.
 
-The solution method is **pseudo-Newton**（pseudo-Newton），until the market clearing error is satisfied：
+We use a **pseudo-Newton iteration** until
+$$
+\max_{d,k} |\text{gap}_{d,k}| < \text{tol} \quad (\text{tol}=10^{-6}).
+$$
 
-$$
-\max_{d,k} | \text{gap}_{d,k} | < \text{tol} \quad (\text{tol}=1\mathrm{e}{-6})
-$$
+
 
 Within the equilibrium, the following endogenous objects are solved and updated iteratively (note that this is a fixed-point iteration, not a regression):
 * `ner_d_loop`: Destination country exchange rate (Nominal Exchange Rate to USD).
@@ -211,7 +211,7 @@ cfin[year > 2002, aum_loop := revaluation_loop * flow]
 
 #### (B3) Update Portfolio Weights: Within + Across (Nested Logit)
 
-**Within**  
+**Within** : Determines which specific country to invest in within the same asset class. 
 
 The attractiveness of country $d$ to investors within asset class $k$ is  
 
@@ -225,7 +225,7 @@ $$
 w_{o,d|k}^{\text{within}} = \frac{\exp(\delta_{o,d,k})}{1 + \sum_{d'}\exp(\delta_{o,d',k})} = \frac{\text{weightN}}{1+\text{weightD}}
 $$
 
-**Across**  
+**Across**:Determines how to allocate capital among the three major categories: short-term debt, long-term debt, and equity.  
 
 Calculate the included value for each asset class:
 
@@ -269,7 +269,6 @@ cfin[w_out != 0, weight0 := 1 / (1 + weightD)]
 
 # Across
 
-```r
 cfin[ , zeta_asset := 0]
 cfin[w_out != 0, zeta_asset := 1 / weight0]
 cfin[w_out != 0, weightN_asset := zeta_asset^lambda * exp(alpha + xi)]
@@ -277,14 +276,6 @@ cfin[w_out != 0, weightN_asset := zeta_asset^lambda * exp(alpha + xi)]
 tmp[ , weight_asset := weightN_asset / sum(weightN_asset), by=.(iso3_o, year)]
 
 ```
-
-
-**Explanation:**
-
-Within: Determines which specific country to invest in within the same asset class.
-
-Across: Determines how to allocate capital among the three major categories: short-term debt, long-term debt, and equity.
-
 
 These two nested layers jointly dictate the final aggregate holdings demand.
 
@@ -315,19 +306,6 @@ $$
 
 A $gap > 0$ indicates that the "supply market cap is larger / demand is insufficient." This requires price/FX adjustments to either raise demand or lower the supply market cap.
 
-
-
-
-
-
-
-##### Market-Clearing Condition
-
-The solver iterates until the system reaches equilibrium, defined by the following market-clearing condition:
-
-$$\text{Demand}^{USD}_{d,\ell,t} = \text{MktCap}^{USD}_{d,\ell,t}$$
-
-The model achieves convergence when the implied gap between aggregate demand and total market capitalization approaches zero.
 
 
 
@@ -456,7 +434,7 @@ getQ <- function(datin) {
                .(iso3_o, iso3_d, type, year, return_tot, holding, aum,
                  ln_price_lc_d, ner_d, div)]
   tmp[, .(iso3_o, iso3_d, type, year, return_tot, holding)]
-}、
+}
 ```
 **Explanation:**
 
